@@ -19,7 +19,7 @@ class SmartHomeEnv(gym.Env):
 
         # Cihazları oluştur
         self.hvac = HVACDevice()
-        self.washer = WasherDevice
+        self.washer = WasherDevice()
         self.lighting = LightingDevice()
 
         # Kullanıcının konfor tercihleri
@@ -58,12 +58,12 @@ class SmartHomeEnv(gym.Env):
         self.comfort_violations = 0  # kaç kez konfor ihlali oldu
         self.manual_interventions = 0  # kaç kez müdahale gerekti
 
-    # Yeni gün başlatma
+    # Yeni gün başlatma (reset)
     def reset(self, seed=None, options=None):
         """
-         Yeni bir gün başlat.
-         Her episode başında otomatik olarak çağrılır.
-         """
+        Yeni bir gün başlat.
+        Her episode başında otomatik olarak çağrılır.
+        """
         super().reset(seed=seed)
 
         # Sayaçları sıfırla
@@ -86,3 +86,112 @@ class SmartHomeEnv(gym.Env):
         observation = self._get_observation()
         info = {}
         return observation, info
+
+    # Mevcut durumu (O anki simülasyonun durumunu alıp) 8 sayılık numpy dizisi olarak döndür
+    def _get_observation(self):
+        price = get_price(self.current_hour % 24)
+        return np.array([
+            self.current_hour,
+            self.outdoor_temp,
+            self.hvac.current_temp,
+            price,
+            float(self.hvac.is_on),
+            float(self.washer.is_running),
+            self.lighting.level,
+            float(self.washer.pending),
+        ], dtype=np.float32)
+
+
+    def step(self, action):
+        """
+        1 saat ilerlet.
+        Aksiyonu uygula -> simülasyonu güncelle -> ödülü hesapla -> yeni state döndür.
+        """
+
+        # Aksiyonu parçalara ayır
+        hvac_action, washer_action, light_action = action
+
+        # -- AKSİYONLARI UYGULA --
+        self.hvac.is_on = bool(hvac_action)
+
+        # Çamaşır: bekleniyorsa ve çalışmıyorsa başlat
+        if washer_action == 1 and self.washer.pending and not self.washer.is_running:
+            self.washer.start()
+
+        # Işık: 0=kapat, 1=yarım, 2=tam
+        light_levels = [0.0, 0.5, 1.0]
+        self.lighting.set_level(light_levels[light_action])
+
+        # ── SİMÜLASYONU İLERLET ──
+
+        # Klima sıcaklığı güncelle
+        self.hvac.update_temperature(self.outdoor_temp)
+
+        # Çamaşırı 1 saat ilerlet
+        self.washer.step()
+
+        # ÖDÜLÜ HESAPLA
+        price = get_price(self.current_hour)
+        reward, cost, comfort_ok = self._calculate_reward(price)
+
+        # İstatistikleri güncelle
+        self.total_cost += cost
+        if not comfort_ok:
+            self.comfort_violations +=1
+
+        # --SONRAKİ SAATE GEÇ--
+        self.current_hour +=1
+        terminated = self.current_hour >=24     #24.saate geldiyse gün bitti (terminated=episode bitti mi?)
+
+        # Gün bittiyse çamaşır hâlâ bekliyor mu?
+        if terminated and self.washer.pending:
+            self.manual_interventions +=1
+
+        observation = self._get_observation()
+        info = {
+            "cost": cost,
+            "total_cost": self.total_cost,
+            "comfort_violations": self.comfort_violations,
+            "indoor_temp": self.hvac.current_temp,
+        }
+
+        return observation, reward, terminated, False, info
+
+
+    def _calculate_reward(self, price):
+        """
+        Çok amaçlı ödül fonksiyonu.
+        Döndürür: toplam_ödül, maliyet, konfor_tamam_mı
+        """
+
+        # ── 1. MALİYET ──
+        # Bu saatte tüm cihazların harcadığı enerji × fiyat
+        total_power = (
+            self.hvac.get_power() +
+            self.washer.get_power() +
+            self.lighting.get_power()
+        )
+        cost = total_power * price      # TL ccinsinden maliyet
+        cost_reward = -cost             # maliyet arttıkça ödül azalır
+
+        # ── 2. KONFOR ──
+        temp_ok = self.hvac.is_comfortable()
+        light_ok = self.lighting.is_comfortable()
+        comfort_ok = temp_ok and light_ok
+        comfort_reward = 1.0 if comfort_ok else -1.0
+
+        # ── 3. OTOMASYON ───
+        # Çamaşır bekliyor ama başlatılmadıysa hafif ceza
+        autonomy_reward = 0.0
+        if self.washer.pending and not self.washer.is_running:
+            autonomy_reward = -0.2
+
+        # ── AĞIRLIKLI TOPLAM ──
+        total_reward = (        #  %50 maliyet, %40 konfor, %10 otomasyon
+            self.w_cost * cost_reward +
+            self.w_comfort * comfort_reward +
+            self.w_autonomy * autonomy_reward
+        )
+
+        return total_reward, cost, comfort_ok
+
