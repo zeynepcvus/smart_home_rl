@@ -110,3 +110,128 @@ class Device:
         self.is_completed = False
         self.remaining_hours = 0
         self.previous_active_state = False
+
+
+# Önceden tanımlı cihaz şablonları
+# Kullanıcı sadece cihaz adını seçer, geri kalanı otomatik dolar
+DEVICE_PRESETS = {
+    "Washing Machine": {
+        "category": "C",
+        "device_type": DEVICE_TYPE_SHIFTABLE,
+        "duration": 2,
+        "deadline": 22,
+        "comfort_sensitive": False
+    },
+    "Dishwasher": {
+        "category": "C",
+        "device_type": DEVICE_TYPE_SHIFTABLE,
+        "duration": 2,
+        "deadline": 22,
+        "comfort_sensitive": False
+    },
+    "HVAC": {
+        "category": "D",
+        "device_type": DEVICE_TYPE_CONTINUOUS,
+        "duration": None,
+        "deadline": None,
+        "comfort_sensitive": True
+    },
+    "Lighting": {
+        "category": "A",
+        "device_type": DEVICE_TYPE_CONTINUOUS,
+        "duration": None,
+        "deadline": None,
+        "comfort_sensitive": False
+    },
+    "EV Charger": {
+        "category": "E",
+        "device_type": DEVICE_TYPE_SHIFTABLE,
+        "duration": 4,
+        "deadline": 22,
+        "comfort_sensitive": False
+    },
+    "Tumble Dryer": {
+        "category": "D",
+        "device_type": DEVICE_TYPE_SHIFTABLE,
+        "duration": 2,
+        "deadline": 22,
+        "comfort_sensitive": False
+    },
+    "Water Heater": {
+        "category": "C",
+        "device_type": DEVICE_TYPE_SHIFTABLE,
+        "duration": 1,
+        "deadline": 22,
+        "comfort_sensitive": False
+    },
+}
+
+
+def power_to_category(power_kw: float) -> str:
+    """
+    Kullanıcının girdiği kW değerini en yakın kategoriye çevir.
+    ENERGY_CATEGORIES içindeki değerlere göre otomatik hesaplanır.
+    Kullanıcı kategori bilmek zorunda değil, biz hallederiz.
+    """
+    if power_kw <= 0:
+        raise ValueError("Power must be positive (greater than 0)")
+    if power_kw > 10:
+        raise ValueError("Power cannot exceed 10 kW for residential devices")
+
+    # En yakın kategoriyi bul
+    closest = min(
+        ENERGY_CATEGORIES.items(),
+        key=lambda x: abs(power_kw - x[1])
+    )
+    return closest[0]
+
+
+def create_device_from_preset(preset_name: str) -> Device:
+    """
+    Cihaz adına göre hazır şablondan Device nesnesi oluştur.
+    Kullanıcı sadece adı seçer, kategori ve özellikler otomatik atanır.
+    """
+    if preset_name not in DEVICE_PRESETS:
+        raise ValueError(f"Unknown device: {preset_name}. "
+                         f"Available: {list(DEVICE_PRESETS.keys())}")
+
+    preset = DEVICE_PRESETS[preset_name]
+    return Device(
+        name=preset_name,
+        category=preset["category"],
+        device_type=preset["device_type"],
+        duration=preset["duration"],
+        deadline=preset["deadline"],
+        comfort_sensitive=preset["comfort_sensitive"]
+    )
+
+
+def create_custom_device(name: str, device_type: int,
+                         power_kw: float,
+                         duration: int | None = None,
+                         deadline: int | None = None) -> Device:
+    """
+    Kullanıcının özel cihazını oluştur.
+    kW değeri otomatik olarak en yakın kategoriye çevrilir.
+    """
+    category = power_to_category(power_kw)
+
+    # Ertelenebilir cihazlar için süre ve deadline zorunlu
+    if device_type == DEVICE_TYPE_SHIFTABLE:
+        if duration is None or deadline is None:
+            raise ValueError("Shiftable devices require duration and deadline")
+
+    # Sürekli cihazlarda duration ve deadline anlamsız, temizle
+    if device_type == DEVICE_TYPE_CONTINUOUS:
+        duration = None
+        deadline = None
+
+    return Device(
+        name=name,
+        category=category,
+        device_type=device_type,
+        duration=duration,
+        deadline=deadline,
+        comfort_sensitive=False  # özel cihazlar konfor etkili değil (ilk sürüm kısıtı)
+    )
+
